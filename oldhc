@@ -1,0 +1,1030 @@
+#!/bin/ksh
+# hc: A quick healthcheck and basic performance tuning recommendation script
+# Written by: Spokey Wheeler
+# Date: 23 Nov 1999
+
+# Version 0.0a : SW : 23 nov 1999 : onstat -p, checkpoint
+#                duration, logical logs, log buffering, foreground writes,
+#                no of shared memory segments, activity per AIO VP
+#                Still to do : DSS, history logging, queries from hell, more
+#                exposition and detail, KAIO
+
+# Version 0.0b : SW : 8 dec 1999 : heavily modified as Solaris
+#                doesn't support many "expr" functions (index, length, substr,
+#                etc.)-:
+
+# Version 0.0c : SW : 16 dec 1999 : added bufwaits usage check and
+#                replaced RA usage with more accurate calculation. Earlier
+#                exit from onstat -p check. Remove temporary SQL script.
+
+# Version 0.0d : SW : 20 jan 2000 : added data vs btree buffer
+#                allocation check
+
+# Version 0.0e : SW : 5 mar 2000 : added LRU contention check
+
+# Version 0.0f : SW : 6 mar 2000 : changed date order in output
+#                file name, and added $outputdir
+
+# Version 0.0g : SW : 10 mar 2000 : added lockwait % check
+
+# Version 0.0h : SW : 27 mar 2000 : added suggestion text for LRU
+#                contention, cleaned up spurious lines, added first disk
+#                space check, changed logical log display to show actual %
+
+# Version 0.0i : SW : 29 mar 2000 : added user count and ready
+#                queue length check
+
+# Version 0.0j : SW : 30 mar 2000 : added buffer allocation
+#                actual percentages and dbping
+
+# Version 0.0k : SW : 04 aug 2000 : sbspace disk utilisation change
+
+############################################################################
+
+echo
+echo "Commencing healthcheck"
+echo
+echo "Check variables are set \c"
+
+# Check environment variables are set
+
+if [ "x$INFORMIXSERVER" = "x" ]
+then
+	echo
+	echo "INFORMIXSERVER is not set!"
+	exit
+fi
+echo ".\c"
+
+if [ "x$INFORMIXDIR" = "x" ]
+then
+	echo
+	echo "INFORMIXDIR is not set!"
+	exit
+fi
+echo ".\c"
+
+if [ "x$ONCONFIG" = "x" ]
+then
+	echo
+	echo "ONCONFIG is not set!"
+	exit
+fi
+echo "done"
+
+# Set up constants
+
+echo
+echo "Setting up constants \c"
+numckpts=40
+echo ".\c"
+outputdir=/home/spokey/oldhc
+outfile=${outputdir}/hc.$INFORMIXSERVER.`date +%y%m%d.%H%M`
+echo ".\c"
+buffsize=`onstat -B | tail -2 | head -1 | awk '{print $10}'`
+echo ".\c"
+buffsize=`expr $buffsize / 1024`
+echo "done"
+
+# Start work
+
+echo "----------------------------------------------------------------------------" > $outfile
+echo "" >> $outfile
+echo "Healthcheck run on `date`" >> $outfile
+echo "for \"$INFORMIXSERVER\" instance" >> $outfile
+echo "using \"$ONCONFIG\" configuration file" >> $outfile
+echo "" >> $outfile
+echo "----------------------------------------------------------------------------" >> $outfile
+echo "" >> $outfile
+
+# Check how long the box has been up
+
+onstat - | grep day > /dev/null 2>&1
+
+if [ $? -eq 0 ]
+then
+	echo "No unusual downtime" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	echo "The server has been restarted in the last 24 hours!" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+
+# Interpret onstat -p
+
+echo
+echo "Assessing onstat -p output \c"
+
+cnt=0
+raalloc=0
+for i in `onstat -p | grep -v bytes | grep [0-9]`
+do
+	cnt=`expr $cnt + 1`
+	case $cnt in
+		2)
+			pagreads=$i
+			;;
+		4)
+			if [ $i -gt 95 ]
+			then
+				if [ $i -ge 99 ]
+				then
+					echo "Read cache is EXCELLENT! ($i%)" >> $outfile
+					echo "" >> $outfile
+					echo "----------------------------------------------------------------------------" >> $outfile
+					echo "" >> $outfile
+				else
+					echo "Read cache is satisfactory ($i%)" >> $outfile
+					echo "" >> $outfile
+					echo "----------------------------------------------------------------------------" >> $outfile
+					echo "" >> $outfile
+				fi
+			else
+				echo "Read cache is below minimum target of 95% at $i% -- you may need more BUFFERS" >> $outfile
+				echo "in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+				echo "" >> $outfile
+				echo "----------------------------------------------------------------------------" >> $outfile
+				echo "" >> $outfile
+			fi
+			;;
+		7)
+			bufwrits=$i
+			;;
+		8)
+			if [ $i -gt 85 ]
+			then
+				if [ $i -gt 95 ]
+				then
+					echo "Write cache is EXCELLENT! ($i%)" >> $outfile
+					echo "" >> $outfile
+					echo "----------------------------------------------------------------------------" >> $outfile
+					echo "" >> $outfile
+				else
+					echo "Write cache is satisfactory ($i%)" >> $outfile
+					echo "" >> $outfile
+					echo "----------------------------------------------------------------------------" >> $outfile
+					echo "" >> $outfile
+				fi
+			else
+				echo "Write cache is below minimum target value of 85% at $i% -- you may need" >> $outfile
+				echo "more BUFFERS or you are checkpointing or cleaning buffers too often. This" >> $outfile
+				echo "can be ignored if users are not complaining about write performance" >> $outfile
+				echo "" >> $outfile
+				echo "----------------------------------------------------------------------------" >> $outfile
+				echo "" >> $outfile
+			fi
+			;;
+		35)
+			if [ $i -gt 0 ]
+			then
+				echo "Your system has encountered $i deadlock(s) -- this indicates a coding issue" >> $outfile
+				echo "within your application" >> $outfile
+				echo "" >> $outfile
+				echo "----------------------------------------------------------------------------" >> $outfile
+				echo "" >> $outfile
+			else
+				echo "Your system has not encountered any deadlocks -- this is good." >> $outfile
+				echo "" >> $outfile
+				echo "----------------------------------------------------------------------------" >> $outfile
+				echo "" >> $outfile
+			fi
+			;;
+		36)
+			if [ $i -gt 0 ]
+			then
+				echo "Your system has encountered $i lock timeout(s) -- this indicates that some" >> $outfile
+				echo "locks are being held for too long in your system" >> $outfile
+				echo "" >> $outfile
+				echo "----------------------------------------------------------------------------" >> $outfile
+				echo "" >> $outfile
+			else
+				echo "Your system has not encountered any lock timeouts -- this is good." >> $outfile
+				echo "" >> $outfile
+				echo "----------------------------------------------------------------------------" >> $outfile
+				echo "" >> $outfile
+			fi
+			break
+			;;
+	esac
+	echo ".\c"
+done
+echo "done"
+
+# Assess LRU contention
+
+SPI=`onstat -g spi|grep -i lru |awk 'BEGIN {w=0} {w=w+$1} END {print w}'`
+
+BUF=`expr $pagreads + $bufwrits`
+
+if [ $BUF -eq 0 ]
+then
+	LC=0
+else
+	LC=`echo "scale=2; $SPI * 100 / $BUF" |bc`
+fi
+
+if [ $LC -lt 1 ]
+then
+	echo "LRU Contention is EXCELLENT (${LC}%) (Lower is better)" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	echo "LRU Contention is too high (${LC}%) (Target is 1% or less)" >> $outfile
+	echo "A possible resolution to this is to increase the number of LRUS available in" >> $outfile
+	echo "$INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+
+# Assess last $numckpts checkpoint durations
+
+echo
+echo "Assessing checkpoint durations \c"
+
+onlinelog=`grep MSGPATH $INFORMIXDIR/etc/$ONCONFIG | awk '{print $2}'`
+echo ".\c"
+
+cnt=0
+grep Checkpoint $onlinelog | grep uration | tail -$numckpts > /tmp/ckpt1.$$
+grep Fuzzy /tmp/ckpt1.$$ | awk '{print $7}' > /tmp/ckpt.$$
+grep -v Fuzzy /tmp/ckpt1.$$ | awk '{print $6}' >> /tmp/ckpt.$$
+for i in `cat /tmp/ckpt.$$`
+do
+	if [ $i -gt 2 ]
+	then
+		cnt=`expr $cnt + 1`
+	fi
+	echo ".\c"
+done
+
+rm /tmp/ckpt1.$$ /tmp/ckpt.$$
+
+if [ $cnt -gt 0 ]
+then
+	echo "Warning: $cnt of the last $numckpts checkpoint(s) lasted longer than 2 seconds! You may" >> $outfile
+	echo "need to increase LRUS and/or decrease LRU_MAX_DIRTY and LRU_MIN_DIRTY in" >> $outfile
+	echo "$INFORMIXDIR/etc/$ONCONFIG to address this. You can also extend the" >> $outfile
+	echo "CKPTINTVL so that LRU cleaners have more to to clean the dirty buffers, or" >> $outfile
+	echo "you can decrease the CKPTINTVL so that checkpoints are more frequent, but" >> $outfile
+	echo "hopefully shorter." >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	echo "Checkpoint duration appears satisfactory" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+echo "done"
+
+echo
+echo "Assessing physical log buffering \c"
+
+# check physical log buffering
+
+plogbufsz=`onstat -l | grep " P-" | awk '{print $3}'`
+echo ".\c"
+plogbufus=`onstat -l | grep " P-" | awk '{print $6}'`
+echo ".\c"
+
+# convert plogbufus to an int so expr can work with it
+
+len=`expr $plogbufus : .\*`
+echo ".\c"
+echo $plogbufus | grep .*\\.[0-9][0-9] > /dev/null
+if [ $? -eq 0 ]
+then
+	dotpos=3
+else
+	dotpos=2
+fi
+
+if [ $len -eq 4 ]
+then
+	if [ $dotpos -eq 3 ]
+	then
+		beforecomma=`echo $plogbufus | cut -b 1,2`
+		aftercomma=`echo $plogbufus | cut -b 4`
+	else
+		beforecomma=`echo $plogbufus | cut -b 1`
+		aftercomma=`echo $plogbufus | cut -b 3,4`
+	fi
+else
+	if [ $len -eq 3 ]
+	then
+		beforecomma=`echo $plogbufus | cut -b 1`
+		aftercomma=`echo $plogbufus | cut -b 3`
+	else
+		beforecomma=`echo $plogbufus | cut -b 1,2`
+		aftercomma=`echo $plogbufus | cut -b 4,5`
+	fi
+fi
+
+tenpow=`expr $len - $dotpos`
+echo ".\c"
+
+dotpos=`expr $dotpos - 1`
+echo ".\c"
+
+dotpos=`expr $dotpos + 2`
+echo ".\c"
+plogbufus=$beforecomma$aftercomma
+echo ".\c"
+
+while [ $tenpow -lt 2 ]
+do
+	plogbufus=`expr $plogbufus \* 10`
+	tenpow=`expr $tenpow + 1`
+	echo ".\c"
+done
+
+plogbufpc=`expr $plogbufus  / $plogbufsz`
+echo ".\c"
+
+if [ $plogbufpc -gt 85 ]
+then
+	echo "PHYSBUFF can be increased in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+	echo "Try setting it to `expr $buffsize \* $plogbufsz + $buffsize`" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	if [ $plogbufpc -lt 75 ]
+	then
+		echo "PHYSBUFF can be decreased in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+		echo "Try setting it to `expr $buffsize \* $plogbufsz - $buffsize`" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	else
+		echo "PHYSBUFF appears to be sized correctly in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	fi
+fi
+echo "done"
+
+# check logical log buffering
+
+echo
+echo "Assessing logical log buffering \c"
+
+llogbufsz=`onstat -l | grep " L-" | awk '{print $3}'`
+echo ".\c"
+llogbufus=`onstat -l | grep " L-" | awk '{print $8}'`
+echo ".\c"
+
+# convert llogbufus to an int so expr can work with it
+
+len=`expr $llogbufus : .\*`
+echo ".\c"
+echo $llogbufus | grep .*\\.[0-9][0-9] > /dev/null
+if [ $? -eq 0 ]
+then
+	dotpos=`expr $len - 2`
+else
+	dotpos=`expr $len - 1`
+fi
+
+
+if [ $len -eq 4 ]
+then
+	if [ $dotpos -eq 3 ]
+	then
+		beforecomma=`echo $llogbufus | cut -b 1,2`
+		aftercomma=`echo $llogbufus | cut -b 4`
+	else
+		beforecomma=`echo $llogbufus | cut -b 1`
+		aftercomma=`echo $llogbufus | cut -b 3,4`
+	fi
+else
+	if [ $len -eq 3 ]
+	then
+		beforecomma=`echo $llogbufus | cut -b 1`
+		aftercomma=`echo $llogbufus | cut -b 3`
+	else
+		beforecomma=`echo $llogbufus | cut -b 1,2`
+		aftercomma=`echo $llogbufus | cut -b 4,5`
+	fi
+fi
+
+tenpow=`expr $len - $dotpos`
+echo ".\c"
+
+dotpos=`expr $dotpos - 1`
+echo ".\c"
+
+dotpos=`expr $dotpos + 2`
+llogbufus=$beforecomma$aftercomma
+echo ".\c"
+
+while [ $tenpow -lt 2 ]
+do
+	llogbufus=`expr $llogbufus \* 10`
+	tenpow=`expr $tenpow + 1`
+	echo ".\c"
+done
+
+llogbufpc=`expr $llogbufus / $llogbufsz`
+echo ".\c"
+
+if [ $llogbufpc -gt 85 ]
+then
+	echo "LOGBUFF can be increased in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+	echo "Try setting it to `expr $buffsize \* $llogbufsz + $buffsize`" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	if [ $llogbufpc -lt 75 ]
+	then
+		if [ $llogbufsz -gt 32 ]
+		then
+			echo "LOGBUFF can be decreased in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+			echo "Try setting it to `expr $buffsize \* $llogbufsz - $buffsize`" >> $outfile
+			echo "" >> $outfile
+			echo "----------------------------------------------------------------------------" >> $outfile
+			echo "" >> $outfile
+		else
+			echo "LOGBUFF appears to be sized correctly in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+			echo "" >> $outfile
+			echo "----------------------------------------------------------------------------" >> $outfile
+			echo "" >> $outfile
+		fi
+	else
+		echo "LOGBUFF appears to be sized correctly in $INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	fi
+fi
+echo "done"
+
+echo
+echo "Assessing overall log status \c"
+
+# check how many newly-added logs there are
+
+cnt=`echo "SELECT COUNT(*) FROM syslogs WHERE is_new = 1;" | dbaccess sysmaster 2> /dev/null | grep [0-9]`
+echo ".\c"
+if [ $cnt -gt 0 ]
+then
+	echo "You have newly added logical logs. Do an ontape -a to make them available" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+echo ".\c"
+
+# check how much free log space there is
+
+totsz=`echo "SELECT SUM(size) FROM syslogs WHERE is_new = 0;" | dbaccess sysmaster 2> /dev/null | grep [0-9]`
+echo ".\c"
+
+echo "CREATE TEMP TABLE t1 (t1 INT);" > t1.sql
+echo "INSERT INTO t1 SELECT SUM(size-used) t1 FROM syslogs WHERE is_new = 0;" >> t1.sql
+echo "INSERT INTO t1 SELECT SUM(size) t1 FROM syslogs WHERE is_used = 0;" >> t1.sql
+echo "INSERT INTO t1 SELECT SUM(size) t1 FROM syslogs WHERE is_used = 1 AND is_backed_up = 1;" >> t1.sql
+echo "SELECT SUM(t1) FROM t1;" >> t1.sql
+totfr=`dbaccess sysmaster t1 2> /dev/null | grep [0-9]`
+
+echo ".\c"
+
+# totfr=`echo "SELECT SUM(size-used) FROM syslogs WHERE is_new = 1 OR (is_used = 1 AND is_backed_up = 1) OR is_used = 0;" | dbaccess sysmaster 2> /dev/null | grep [0-9]`
+
+echo ".\c"
+
+totfrpc=`expr $totfr \* 100 / $totsz`
+echo ".\c"
+
+if [ $totfrpc -lt 50 ]
+then
+	echo "You have less than half your logical log space left ($totfrpc % free). Do an" >> $outfile
+	echo "ontape -a to make more available" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	echo "Logical logs are less than half full ($totfrpc % free) -- this is satisfactory" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+echo ".\c"
+# rm t1.sql
+echo "done"
+
+# foreground writes
+
+echo
+echo "Assessing foreground writes \c"
+
+cnt=`onstat -F | grep [0-9] | grep -v "[a-z]" | grep -v "[A-Z]" | awk '{print $1}'`
+echo ".\c"
+
+if [ $cnt -gt 0 ]
+then
+	echo "Warning: You have encountered $cnt foreground write(s). This indicates that" >> $outfile
+	echo "you may need more LRUS and/or more CLEANERS in" >> $outfile
+	echo "$INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	echo "No foreground writes noted -- this is good" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+echo "done"
+
+# shared memory usage
+
+echo
+echo "Assessing shared memory usage \c"
+cnt=`onstat -g seg | grep " V " | wc -l | awk '{print $1}'`
+echo ".\c"
+
+if [ $cnt -gt 1 ]
+then
+	echo "Warning: You have too many shared memory segments (you should have 1, you" >> $outfile
+	echo "have $cnt) Increase SHMVIRTSIZE and/or SHMADD in" >> $outfile
+	echo "$INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	echo "Shared memory usage appears satisfactory" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+echo "done"
+
+# Activity per AIO VP
+
+echo
+echo "Assessing AIO activity \c"
+cnt=0
+tot=0
+belowone=0
+
+for i in `onstat -g iov | grep '[ak]io' | awk '{print $10}'`
+do
+
+	cnt=`expr $cnt + 1`
+
+	# convert i to an int so expr can work with it
+
+	len=`expr $i : .\*`
+	echo ".\c"
+
+echo $i | grep .*\\.[0-9][0-9] > /dev/null
+if [ $? -eq 0 ]
+then
+	dotpos=3
+else
+	dotpos=2
+fi
+
+if [ $len -eq 4 ]
+then
+	if [ $dotpos -eq 3 ]
+	then
+		beforecomma=`echo $i | cut -b 1,2`
+		aftercomma=`echo $i | cut -b 4`
+	else
+		beforecomma=`echo $i | cut -b 1`
+		aftercomma=`echo $i | cut -b 3,4`
+	fi
+else
+	if [ $len -eq 3 ]
+	then
+		beforecomma=`echo $i | cut -b 1`
+		aftercomma=`echo $i | cut -b 3`
+	else
+		beforecomma=`echo $i | cut -b 1,2`
+		aftercomma=`echo $i | cut -b 4,5`
+	fi
+fi
+
+	dotpos=`expr $dotpos - 1`
+	echo ".\c"
+
+	if [ $beforecomma -eq 0 ]
+	then
+		belowone=`expr $belowone + 1`
+	fi
+
+	dotpos=`expr $dotpos + 2`
+	echo ".\c"
+	i=$beforecomma$aftercomma
+	echo ".\c"
+
+	tot=`expr $tot + $i`
+	echo ".\c"
+
+done
+
+tot=`expr $tot / $cnt`
+
+if [ $belowone -eq 1 ]
+then
+	echo "The correct number of AIO/KAIO VPs are configured" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	if [ $belowone -gt 1 ]
+	then
+		echo "Too many AIO/KAIO VPs are configured ($belowone AIO/KAIO VPs have less than" >> $outfile
+		echo "1 I/O per wakeup, should only be 1)" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	else
+		if [ $tot -gt 11 ]
+		then
+			echo "Too few AIO/KAIO VPs are configured (no AIO/KAIO VPs have less than 1 I/O per" >> $outfile
+			echo "wakeup.)" >> $outfile
+			echo "" >> $outfile
+			echo "----------------------------------------------------------------------------" >> $outfile
+			echo "" >> $outfile
+		else
+			echo "Too few AIO/KAIO VPs are configured (no AIO/KAIO VPs have less than 1 I/O per wakeup)," >> $outfile
+			echo "but it does not seem to be causing any problems at this stage." >> $outfile
+			echo "" >> $outfile
+			echo "----------------------------------------------------------------------------" >> $outfile
+			echo "" >> $outfile
+		fi
+	fi
+fi
+echo "done"
+
+echo
+echo "Assessing buffer waits and read-ahead usage \c"
+
+raperci=`onstat -p | awk '
+/[a-zA-Z]/ {
+     for(i=1; i<=NF; i++){
+       name[i] = $i;
+     }
+    }
+/[0-9]/ {
+     for(i=1; i<=NF; i++){
+       content[name[i]] = $i;
+     }
+    }
+END {
+    ixdaRA = content["ixda-RA"];
+    idxRA = content["idx-RA"];
+    daRA = content["da-RA"];
+    RApgsused = content["RA-pgsused"];
+    print (RApgsused / (ixdaRA + idxRA + daRA)) * 1000;
+}
+'`
+echo ".\c"
+
+bufwperci=`onstat -p | awk '
+/[a-zA-Z]/ {
+     for(i=1; i<=NF; i++){
+       name[i] = $i;
+     }
+    }
+/[0-9]/ {
+     for(i=1; i<=NF; i++){
+       content[name[i]] = $i;
+     }
+    }
+END {
+    bufwaits = content["bufwaits"];
+    bufwrits = content["bufwrits"];
+    pagreads = content["pagreads"];
+    print ((bufwaits/(pagreads + bufwrits)) * 1000);
+}
+'`
+echo ".\c"
+
+raperc=`onstat -p | awk '
+/[a-zA-Z]/ {
+     for(i=1; i<=NF; i++){
+       name[i] = $i;
+     }
+    }
+/[0-9]/ {
+     for(i=1; i<=NF; i++){
+       content[name[i]] = $i;
+     }
+    }
+END {
+    ixdaRA = content["ixda-RA"];
+    idxRA = content["idx-RA"];
+    daRA = content["da-RA"];
+    RApgsused = content["RA-pgsused"];
+    print (RApgsused / (ixdaRA + idxRA + daRA)) * 100;
+}
+'`
+echo ".\c"
+
+bufwperc=`onstat -p | awk '
+/[a-zA-Z]/ {
+     for(i=1; i<=NF; i++){
+       name[i] = $i;
+     }
+    }
+/[0-9]/ {
+     for(i=1; i<=NF; i++){
+       content[name[i]] = $i;
+     }
+    }
+END {
+    bufwaits = content["bufwaits"];
+    bufwrits = content["bufwrits"];
+    pagreads = content["pagreads"];
+    print ((bufwaits/(pagreads + bufwrits)) * 100);
+}
+'`
+echo ".\c"
+
+if [ $raperci -ge 990 ]
+then
+	echo "" >> $outfile
+	echo "Read Ahead buffer usage is EXCELLENT ($raperc %)" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	if [ $raperci  -ge 970 ]
+	then
+		echo "Read Ahead buffer usage is good ($raperc %)" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	else
+		echo "Read Ahead buffer usage is poor ($raperc %)" >> $outfile
+		echo "Consider decreasing RA_PAGES and/or RA_THRESHOLD in" >> $outfile
+		echo "$INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	fi
+fi
+echo ".\c"
+
+if [ $bufwperci -le 70 ]
+then
+	echo "Buffer wait ratio is EXCELLENT ($bufwperc %) (lower is better)" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	if [ $bufwperci  -le 150 ]
+	then
+		echo "Buffer wait ratio is good ($bufwperc %) (lower is better)" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	else
+		echo "Buffer wait ratio is poor ($bufwperc %) (lower is better)" >> $outfile
+		echo "Consider increasing LRUS, CLEANERS and/or NUMCPUVPS in" >> $outfile
+		echo "$INFORMIXDIR/etc/$ONCONFIG" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	fi
+fi
+echo "done"
+
+# lock wait % check
+
+echo
+echo "Assessing lock waits \c"
+
+lwperc=`onstat -p | awk '
+/[a-zA-Z]/ {
+     for(i=1; i<=NF; i++){
+       name[i] = $i;
+     }
+    }
+/[0-9]/ {
+     for(i=1; i<=NF; i++){
+       content[name[i]] = $i;
+     }
+    }
+END {
+    lokwaits = content["lokwaits"];
+    lockreqs = content["lockreqs"];
+    print (lokwaits / lockreqs) * 100;
+}
+'`
+echo ".\c"
+
+echo $lwperc | grep "e-" > /dev/null 2>&1
+
+if [ $? -eq 0 ]
+then
+	lwperc=0.00001
+fi
+
+if [ $lwperc -le 10 ]
+then
+	echo "Lock wait ratio is EXCELLENT ($lwperc %) (lower is better)" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	if [ $lwperc  -le 50 ]
+	then
+		echo "Lock wait ratio is acceptable ($lwperc %) (lower is better)" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	else
+		echo "Lock wait ratio is poor ($lwperc %)" >> $outfile
+		echo "Examine the isolation levels used by SQL statements plus the overall design" >> $outfile
+		echo "of transaction management" >> $outfile
+		echo "" >> $outfile
+		echo "----------------------------------------------------------------------------" >> $outfile
+		echo "" >> $outfile
+	fi
+fi
+
+echo "done"
+
+# data vs btree buffer allocation check
+
+echo
+echo "Assessing buffer allocations \c"
+
+dataperc=`onstat -P | tail -4 | grep -i data | awk '{print $2}'`
+echo ".\c"
+btreeperc=`onstat -P | tail -4 | grep -i btree | awk '{print $2}'`
+echo ".\c"
+otherperc=`onstat -P | tail -4 | grep -i other | awk '{print $2}'`
+echo ".\c"
+
+echo "$dataperc %  of buffers are allocated to data." >> $outfile
+
+if [ $btreeperc -gt 50 ]
+then
+	echo "" >> $outfile
+	echo "The percentage of buffers allocated to index data appears dangerously high ($btreeperc %)." >> $outfile
+	echo "You should reboot your server immediately. If this behaviour recurs, you may" >> $outfile
+	echo "have encountered a known or unknown bug. Please contact Informix Technical" >> $outfile
+	echo "Support" >> $outfile
+else
+	if [ $btreeperc -gt 20 ]
+	then
+		echo "" >> $outfile
+		echo "The percentage of buffers allocated to indexes seems high ($btreeperc %). If your system is" >> $outfile
+		echo "heavily indexed, this may be normal, otherwise this could be cause for concern" >> $outfile
+	else
+		echo "" >> $outfile
+		echo "The percentage of buffers allocated to indexes seems acceptable ($btreeperc %). " >> $outfile
+	fi
+fi
+
+echo ".\c"
+if [ $otherperc -gt 5 ]
+then
+	echo "" >> $outfile
+	echo "The percentage of buffers allocated to \"other uses\" seems high ($otherperc %). This" >> $outfile
+	echo "should be investigated" >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+else
+	echo "" >> $outfile
+	echo "The percentage of buffers allocated to \"other uses\" seems acceptable ($otherperc %). " >> $outfile
+	echo "" >> $outfile
+	echo "----------------------------------------------------------------------------" >> $outfile
+	echo "" >> $outfile
+fi
+
+echo "done"
+
+# disk utilization check
+
+echo
+echo "Assessing disk utilization \c"
+
+dbaccess sysmaster <<! 2> /dev/null | grep [0-9] > /tmp/du1.$$
+-- SELECT name[1,18], 100 - (SUM(nfree) * 100 / SUM(chksize))
+-- FROM sysdbspaces, syschunks
+-- WHERE syschunks.dbsnum = sysdbspaces.dbsnum
+-- GROUP BY 1
+-- ORDER BY 1
+SELECT name[1,18], 100 - (SUM(CASE WHEN udfree = -1 THEN nfree ELSE udfree END) * 100 / SUM(chksize))
+FROM sysdbspaces, syschunks
+WHERE syschunks.dbsnum = sysdbspaces.dbsnum
+GROUP BY 1
+ORDER BY 1
+
+!
+
+echo ".\c"
+
+for i in `cat /tmp/du1.$$`
+do
+        echo ".\c"
+        echo $i | grep "[a-z]" > /dev/null 2>&1
+        if [ $? -eq 0 ]
+        then
+                echo "$i \c" >> $outfile
+        else
+		i=`printf "%.2f" $i`
+                if [ $i -gt 70 ]
+                then
+                        if [ $i -gt 79 ]
+                        then
+                                echo "is $i % full -- you will need to add more space URGENTLY!" >> $outfile
+                        else
+                                echo "is $i % full -- you will need to add more space soon" >> $outfile
+                        fi
+                else
+                        echo "is $i % full -- this is acceptable" >> $outfile
+                fi
+        fi
+done
+
+rm /tmp/du1.$$
+
+echo "" >> $outfile
+echo "----------------------------------------------------------------------------" >> $outfile
+echo "" >> $outfile
+
+echo "done"
+
+echo
+echo "Assessing user load \c"
+
+set `onstat -u | tail -2 | head -1 | awk '{print $1" "$3" "$5}'`
+echo ".\c"
+activeu=$1
+echo ".\c"
+totalu=$2
+echo ".\c"
+maxu=$3
+echo ".\c"
+
+echo "User load (active / maximum) $activeu / $maxu" >> $outfile
+echo "" >> $outfile
+echo "----------------------------------------------------------------------------" >> $outfile
+echo "" >> $outfile
+
+echo "done"
+
+echo
+echo "Assessing ready queue \c"
+
+for i in 1 2 3 4 5
+do
+	onstat -g rea | grep sqlexec | wc -l
+	sleep 1
+done | awk '{ s += $1 } END  { print "Average ready queue length is", s/NR }' >> $outfile
+
+echo ".\c"
+
+echo "" >> $outfile
+echo "----------------------------------------------------------------------------" >> $outfile
+echo "" >> $outfile
+
+echo "done"
+
+echo
+echo "Assessing connection times \c"
+
+dbping -n 5 -s 1 | grep "min/avg/max" | awk '{print $5" "$7" "$9}' | read min avg max
+
+echo ".\c"
+
+echo "Connection times (min/avg/max) $min / $avg / $max (in seconds)" >> $outfile
+echo "" >> $outfile
+echo "----------------------------------------------------------------------------" >> $outfile
+echo "" >> $outfile
+
+echo "done"
+
+# Yibbida, yibbida, that's all folks....
+
+echo "Healthcheck complete" >> $outfile
+echo "" >> $outfile
+echo "----------------------------------------------------------------------------" >> $outfile
+echo "" >> $outfile
+
+sleep 1
+echo
+echo "Healthcheck complete"
+sleep 3
+
+clear
+
+more $outfile
