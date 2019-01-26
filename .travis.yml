@@ -8,6 +8,6 @@ dist: xenial
 notifications:
   slack:
     rooms:
-	  - zinaida:cS9FF04mRHHE6y1jGXXbpxRy#builds
+    - zinaida:cS9FF04mRHHE6y1jGXXbpxRy#builds
     
     
