@@ -927,7 +927,7 @@ FROM sysdbspaces, syschunks
 WHERE syschunks.dbsnum = sysdbspaces.dbsnum
 GROUP BY 1
 ORDER BY 1
-
+;
 !
 
 echo ".\c"
