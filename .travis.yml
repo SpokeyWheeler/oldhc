@@ -11,3 +11,4 @@ notifications:
     - zinaida:cS9FF04mRHHE6y1jGXXbpxRy#builds
     
     
+scripts: bash run-tests.sh
