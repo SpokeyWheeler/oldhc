@@ -916,7 +916,7 @@ echo "done"
 echo
 echo "Assessing disk utilization \c"
 
-dbaccess sysmaster <<! 2> /dev/null | grep [0-9] > /tmp/du1.$$
+dbaccess sysmaster <<!EOF 2> /dev/null | grep [0-9] > /tmp/du1.$$
 -- SELECT name[1,18], 100 - (SUM(nfree) * 100 / SUM(chksize))
 -- FROM sysdbspaces, syschunks
 -- WHERE syschunks.dbsnum = sysdbspaces.dbsnum
@@ -928,7 +928,7 @@ WHERE syschunks.dbsnum = sysdbspaces.dbsnum
 GROUP BY 1
 ORDER BY 1
 ;
-!
+!EOF
 
 echo ".\c"
 
