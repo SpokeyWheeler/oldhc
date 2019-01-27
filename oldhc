@@ -120,7 +120,6 @@ echo
 echo "Assessing onstat -p output \c"
 
 cnt=0
-raalloc=0
 for i in `onstat -p | grep -v bytes | grep [0-9]`
 do
 	cnt=`expr $cnt + 1`
