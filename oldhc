@@ -917,11 +917,6 @@ echo
 echo "Assessing disk utilization \c"
 
 dbaccess sysmaster <<!EOF 2> /dev/null | grep [0-9] > /tmp/du1.$$
--- SELECT name[1,18], 100 - (SUM(nfree) * 100 / SUM(chksize))
--- FROM sysdbspaces, syschunks
--- WHERE syschunks.dbsnum = sysdbspaces.dbsnum
--- GROUP BY 1
--- ORDER BY 1
 SELECT name[1,18], 100 - (SUM(CASE WHEN udfree = -1 THEN nfree ELSE udfree END) * 100 / SUM(chksize))
 FROM sysdbspaces, syschunks
 WHERE syschunks.dbsnum = sysdbspaces.dbsnum
